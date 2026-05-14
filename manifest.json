@@ -1,0 +1,59 @@
+{
+   "action": {
+      "default_icon": {
+         "128": "assets/icons/icon128.png",
+         "16": "assets/icons/icon16.png",
+         "48": "assets/icons/icon48.png"
+      },
+      "default_popup": ""
+   },
+   "author": "NotebookLM Tool",
+   "background": {
+      "service_worker": "background/service-worker.js"
+   },
+   "content_scripts": [
+      {
+         "js": [
+            "content/content-script.js"
+         ],
+         "matches": [
+            "https://notebooklm.google.com/*"
+         ],
+         "run_at": "document_start"
+      }
+   ],
+   "web_accessible_resources": [
+      {
+         "resources": [
+            "content/inject.js"
+         ],
+         "matches": [
+            "https://notebooklm.google.com/*"
+         ]
+      }
+   ],
+   "content_security_policy": {
+      "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com;"
+   },
+   "description": "NotebookLM mindmap copy and download tool",
+   "host_permissions": [
+      "https://notebooklm.google.com/*",
+      "https://lh3.googleusercontent.com/*",
+      "https://lh3.google.com/*"
+   ],
+   "icons": {
+      "128": "assets/icons/icon128.png",
+      "16": "assets/icons/icon16.png",
+      "48": "assets/icons/icon48.png"
+   },
+   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAta9a+siz9k68dxLtxCaXNRRHhKIFdpysZBwYr2pJdJaEANf/QtVKJiExmddiRJl6WZxjBd8ExvqVBYdOeg2IRxkk8No3xBTNJxoJwsD+P4ijTrpcB3u3xYPAjDuxrHdMUWL8q7gsjBvw+gI8OBmU/b+QnVbUj3kbVyLXWer+UBJq9x790aiQ06n4j48x7Bft5a2a++2HaVgmVSksB5Y4jGfoKXPgx8D5JHEsgNPY2e050t3ZyceORg45aVQUMlDxRo6sV0wub6TsfjgOrK35JIvyJTnEjRmjWlK3CWvA6j0cq797IPIK5Q1Pyb7Lv/yMVLT0C6Flt2oSCtdh2atdEwIDAQAB",
+   "manifest_version": 3,
+   "name": "NotebookLM Mindmap Tool",
+   "permissions": [
+      "notifications",
+      "activeTab",
+      "downloads"
+   ],
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "1.0.11"
+}
