@@ -826,6 +826,12 @@
             deleteBtn.textContent = `删除 (${selectedCount})`;
         }
 
+        const downloadBtn = toolbar.querySelector('.notebooklm-batch-download-btn');
+        if (downloadBtn) {
+            downloadBtn.disabled = selectedCount === 0;
+            downloadBtn.textContent = `下载 (${selectedCount})`;
+        }
+
         const selectAll = toolbar.querySelector('.notebooklm-batch-select-all');
         if (selectAll) {
             selectAll.checked = totalCount > 0 && selectedCount === totalCount;
@@ -877,6 +883,48 @@
             tip.querySelector('.notebooklm-confirm-yes').addEventListener('click', (e) => { e.stopPropagation(); cleanup(true); });
             tip.querySelector('.notebooklm-confirm-no').addEventListener('click', (e) => { e.stopPropagation(); cleanup(false); });
         });
+    }
+
+    /**
+     * 自动点击“更多 -> 下载”，下载单条资源
+     * @param {HTMLElement} row - 资源行
+     * @returns {Promise<boolean>} - 是否点击下载成功
+     */
+    async function downloadSingleRowByUi(row) {
+        if (!row.isConnected) return false;
+
+        const moreBtn = row.querySelector('button mat-icon, button span.mat-icon');
+        let triggerBtn = null;
+        if (moreBtn) {
+            const iconText = (moreBtn.textContent || '').trim().toLowerCase();
+            if (iconText === 'more_vert' || iconText === 'more_horiz') {
+                triggerBtn = moreBtn.closest('button');
+            }
+        }
+        if (!triggerBtn) return false;
+
+        triggerBtn.click();
+        await sleep(220);
+
+        const menuItems = Array.from(document.querySelectorAll('[role="menu"] button, .mat-mdc-menu-panel button'));
+        const downloadItem = menuItems.find(btn => {
+            if (!isVisible(btn)) return false;
+            const txt = (btn.textContent || '').replace(/\s+/g, '');
+            const hasDownloadText = txt.includes('下载') || txt.toLowerCase().includes('download');
+            const icon = btn.querySelector('mat-icon, .mat-icon');
+            const iconText = icon ? (icon.textContent || '').trim().toLowerCase() : '';
+            return hasDownloadText || iconText === 'save_alt';
+        });
+
+        if (!downloadItem) {
+            // 如果没找到，点击背景关闭菜单
+            document.body.click();
+            return false;
+        }
+
+        downloadItem.click();
+        await sleep(600); // 给浏览器弹出下载预留时间
+        return true;
     }
 
     /**
@@ -1047,6 +1095,75 @@
     }
 
     /**
+     * 执行批量下载流程
+     */
+    async function runBatchDownload() {
+        const selectedRows = getSelectedRows();
+        if (selectedRows.length === 0) return;
+
+        const titlesToDownload = selectedRows.map(row => getRowTitle(row));
+        const totalCount = titlesToDownload.length;
+
+        const toolbar = document.getElementById('notebooklm-batch-delete-toolbar');
+        if (!toolbar) return;
+
+        batchDeleteInProgress = true;
+        const downloadBtn = toolbar.querySelector('.notebooklm-batch-download-btn');
+        const countNode = toolbar.querySelector('.notebooklm-batch-delete-count');
+
+        let successCount = 0;
+        let failedTitles = [];
+
+        for (let i = 0; i < selectedRows.length; i++) {
+            const row = selectedRows[i];
+            const title = titlesToDownload[i];
+
+            if (downloadBtn) {
+                downloadBtn.disabled = true;
+                downloadBtn.textContent = `下载中 ${i + 1}/${totalCount}`;
+            }
+            if (countNode) {
+                countNode.textContent = `✓${successCount} ✗${failedTitles.length}`;
+            }
+
+            const ok = await downloadSingleRowByUi(row);
+            if (ok) {
+                successCount += 1;
+            } else {
+                failedTitles.push(title);
+            }
+
+            // 固定等待一段时间，避免并发下载过多
+            await sleep(4000);
+        }
+
+        batchDeleteInProgress = false;
+
+        if (countNode) {
+            const resultMsg = failedTitles.length > 0
+                ? `完成 ✓${successCount} ✗${failedTitles.length}`
+                : `已下载 ${successCount} 条`;
+            countNode.textContent = resultMsg;
+            setTimeout(() => updateBatchDeleteToolbar(), 3000);
+        }
+        if (downloadBtn) {
+            downloadBtn.disabled = false;
+            downloadBtn.textContent = `下载 (0)`;
+        }
+
+        // 下载完成后取消全选，方便用户继续其他操作
+        const selectAll = toolbar.querySelector('.notebooklm-batch-select-all');
+        if (selectAll && selectAll.checked) {
+            selectAll.click(); // 触发 change 事件取消所有勾选
+        }
+
+        if (DEBUG) {
+            console.log(`[DEBUG] 批量下载完成: 成功 ${successCount}/${totalCount}`);
+            if (failedTitles.length > 0) console.log('[DEBUG] 失败项:', failedTitles);
+        }
+    }
+
+    /**
      * 创建并维护批量删除工具栏（全选 + 批量删除）
      * 工具栏作为列表容器的首个子元素，随列表滚动，不再悬浮。
      */
@@ -1070,7 +1187,10 @@
                     <span>全选</span>
                 </label>
                 <span class="notebooklm-batch-delete-count" style="font-size:12px;opacity:.9;white-space:nowrap;">已选 0/0</span>
-                <button class="notebooklm-batch-delete-btn" style="border:none;border-radius:6px;padding:4px 10px;background:#d93025;color:#fff;cursor:pointer;font-size:12px;line-height:1;white-space:nowrap;margin-left:auto;">删除 (0)</button>
+                <div style="margin-left:auto; display:flex; gap:8px;">
+                    <button class="notebooklm-batch-download-btn" style="border:none;border-radius:6px;padding:4px 10px;background:#34a853;color:#fff;cursor:pointer;font-size:12px;line-height:1;white-space:nowrap;">下载 (0)</button>
+                    <button class="notebooklm-batch-delete-btn" style="border:none;border-radius:6px;padding:4px 10px;background:#d93025;color:#fff;cursor:pointer;font-size:12px;line-height:1;white-space:nowrap;">删除 (0)</button>
+                </div>
             `;
             if (container) {
                 container.prepend(toolbar);
@@ -1093,6 +1213,11 @@
             const deleteBtn = toolbar.querySelector('.notebooklm-batch-delete-btn');
             deleteBtn.addEventListener('click', async () => {
                 await runBatchDelete();
+            });
+
+            const downloadBtn = toolbar.querySelector('.notebooklm-batch-download-btn');
+            downloadBtn.addEventListener('click', async () => {
+                await runBatchDownload();
             });
         }
 
