@@ -888,10 +888,10 @@
     /**
      * 自动点击“更多 -> 下载”，下载单条资源
      * @param {HTMLElement} row - 资源行
-     * @returns {Promise<boolean>} - 是否点击下载成功
+     * @returns {Promise<'SUCCESS'|'SKIPPED'|'FAILED'>} - 下载执行状态
      */
     async function downloadSingleRowByUi(row) {
-        if (!row.isConnected) return false;
+        if (!row.isConnected) return 'FAILED';
 
         const moreBtn = row.querySelector('button mat-icon, button span.mat-icon');
         let triggerBtn = null;
@@ -901,7 +901,7 @@
                 triggerBtn = moreBtn.closest('button');
             }
         }
-        if (!triggerBtn) return false;
+        if (!triggerBtn) return 'FAILED';
 
         triggerBtn.click();
         await sleep(220);
@@ -917,14 +917,14 @@
         });
 
         if (!downloadItem) {
-            // 如果没找到，点击背景关闭菜单
+            // 如果没找到（例如脑图没有原生下载按钮），点击背景关闭菜单，并标记为已跳过
             document.body.click();
-            return false;
+            return 'SKIPPED';
         }
 
         downloadItem.click();
         await sleep(600); // 给浏览器弹出下载预留时间
-        return true;
+        return 'SUCCESS';
     }
 
     /**
@@ -1112,6 +1112,7 @@
         const countNode = toolbar.querySelector('.notebooklm-batch-delete-count');
 
         let successCount = 0;
+        let skippedCount = 0;
         let failedTitles = [];
 
         for (let i = 0; i < selectedRows.length; i++) {
@@ -1123,12 +1124,17 @@
                 downloadBtn.textContent = `下载中 ${i + 1}/${totalCount}`;
             }
             if (countNode) {
-                countNode.textContent = `✓${successCount} ✗${failedTitles.length}`;
+                countNode.textContent = `✓${successCount} ⏭${skippedCount} ✗${failedTitles.length}`;
             }
 
-            const ok = await downloadSingleRowByUi(row);
-            if (ok) {
+            const status = await downloadSingleRowByUi(row);
+            if (status === 'SUCCESS') {
                 successCount += 1;
+            } else if (status === 'SKIPPED') {
+                skippedCount += 1;
+                // 如果是跳过（比如思维脑图），我们可以缩短等待时间
+                await sleep(300);
+                continue;
             } else {
                 failedTitles.push(title);
             }
@@ -1140,9 +1146,10 @@
         batchDeleteInProgress = false;
 
         if (countNode) {
-            const resultMsg = failedTitles.length > 0
-                ? `完成 ✓${successCount} ✗${failedTitles.length}`
-                : `已下载 ${successCount} 条`;
+            let resultMsg = `已下载 ${successCount} 条`;
+            if (skippedCount > 0) resultMsg += ` (跳过 ${skippedCount})`;
+            if (failedTitles.length > 0) resultMsg += ` (失败 ${failedTitles.length})`;
+            
             countNode.textContent = resultMsg;
             setTimeout(() => updateBatchDeleteToolbar(), 3000);
         }
