@@ -643,7 +643,6 @@
             if (row.dataset.batchDeleteEnhanced === 'true') return;
             row.dataset.batchDeleteEnhanced = 'true';
 
-            // 确保可以绝对定位复选框
             const rowStyle = window.getComputedStyle(row);
             if (rowStyle.position === 'static') {
                 row.style.position = 'relative';
@@ -653,21 +652,13 @@
             checkbox.type = 'checkbox';
             checkbox.className = 'notebooklm-batch-delete-checkbox';
             checkbox.title = `选择删除: ${getRowTitle(row)}`;
-            checkbox.style.position = 'absolute';
-            checkbox.style.left = '8px';
-            checkbox.style.top = '50%';
-            checkbox.style.transform = 'translateY(-50%)';
-            checkbox.style.zIndex = '5';
-            checkbox.style.width = '16px';
-            checkbox.style.height = '16px';
-            checkbox.style.cursor = 'pointer';
+            checkbox.style.cssText = 'position:absolute;left:8px;top:50%;transform:translateY(-50%);z-index:5;width:16px;height:16px;cursor:pointer;';
 
             checkbox.addEventListener('click', (e) => e.stopPropagation(), true);
             checkbox.addEventListener('change', () => updateBatchDeleteToolbar());
 
             row.appendChild(checkbox);
 
-            // 给内容区域留出复选框空间
             const currentPaddingLeft = parseFloat(rowStyle.paddingLeft || '0') || 0;
             if (currentPaddingLeft < 28) {
                 row.style.paddingLeft = '28px';
@@ -698,6 +689,9 @@
         const toolbar = document.getElementById('notebooklm-batch-delete-toolbar');
         if (!toolbar) return;
 
+        // 删除进行中时不更新（避免覆盖进度提示）
+        if (batchDeleteInProgress) return;
+
         const container = getArtifactLibraryContainer();
         const allCheckboxes = container
             ? Array.from(container.querySelectorAll('.notebooklm-batch-delete-checkbox'))
@@ -712,8 +706,8 @@
 
         const deleteBtn = toolbar.querySelector('.notebooklm-batch-delete-btn');
         if (deleteBtn) {
-            deleteBtn.disabled = selectedCount === 0 || batchDeleteInProgress;
-            deleteBtn.textContent = batchDeleteInProgress ? '删除中...' : `删除 (${selectedCount})`;
+            deleteBtn.disabled = selectedCount === 0;
+            deleteBtn.textContent = `删除 (${selectedCount})`;
         }
 
         const selectAll = toolbar.querySelector('.notebooklm-batch-select-all');
@@ -724,11 +718,60 @@
     }
 
     /**
+     * 在按钮附近显示内联确认提示（替代 window.confirm）
+     * @param {HTMLElement} anchorEl - 锚定元素
+     * @param {string} message - 提示文本
+     * @returns {Promise<boolean>} - 用户是否确认
+     */
+    function showInlineConfirm(anchorEl, message) {
+        return new Promise(resolve => {
+            // 移除已有的确认提示
+            const existing = document.getElementById('notebooklm-inline-confirm');
+            if (existing) existing.remove();
+
+            const tip = document.createElement('div');
+            tip.id = 'notebooklm-inline-confirm';
+            tip.style.cssText = `
+                position:absolute; bottom:calc(100% + 6px); right:0;
+                background:#2d2e30; color:#e8eaed; border:1px solid #5f6368;
+                border-radius:8px; padding:10px 12px; z-index:100;
+                box-shadow:0 4px 16px rgba(0,0,0,.3); white-space:nowrap;
+                font-size:13px; display:flex; align-items:center; gap:8px;
+                animation: notebooklm-tip-in .15s ease-out;
+            `;
+            tip.innerHTML = `
+                <span style="color:#f28b82;">⚠</span>
+                <span>${message}</span>
+                <button class="notebooklm-confirm-yes" style="border:none;border-radius:6px;padding:4px 12px;background:#d93025;color:#fff;cursor:pointer;font-size:12px;font-weight:500;">确认</button>
+                <button class="notebooklm-confirm-no" style="border:none;border-radius:6px;padding:4px 12px;background:#3c4043;color:#e8eaed;cursor:pointer;font-size:12px;">取消</button>
+            `;
+
+            // 确保锚定元素有定位上下文
+            const anchorStyle = window.getComputedStyle(anchorEl);
+            if (anchorStyle.position === 'static') {
+                anchorEl.style.position = 'relative';
+            }
+            anchorEl.appendChild(tip);
+
+            const cleanup = (result) => {
+                tip.remove();
+                resolve(result);
+            };
+
+            tip.querySelector('.notebooklm-confirm-yes').addEventListener('click', (e) => { e.stopPropagation(); cleanup(true); });
+            tip.querySelector('.notebooklm-confirm-no').addEventListener('click', (e) => { e.stopPropagation(); cleanup(false); });
+        });
+    }
+
+    /**
      * 自动点击“更多 -> 删除 -> 确认删除”，删除单条资源
      * @param {HTMLElement} row - 资源行
      * @returns {Promise<boolean>} - 是否删除成功
      */
     async function deleteSingleRowByUi(row) {
+        // 检查 row 是否仍在 DOM 中
+        if (!row.isConnected) return false;
+
         const moreBtn = row.querySelector('button mat-icon, button span.mat-icon');
         let triggerBtn = null;
         if (moreBtn) {
@@ -763,7 +806,6 @@
             if (!isVisible(btn)) return false;
             const txt = (btn.textContent || '').replace(/\s+/g, '');
             if (!txt) return false;
-            // 优先命中明确的删除按钮
             if (txt.includes('删除')) return true;
             return txt.toLowerCase() === 'delete';
         });
@@ -778,36 +820,119 @@
     }
 
     /**
-     * 执行批量删除流程（按选中项逐个删除）
-     * @returns {Promise<void>} - Promise 对象
+     * 按标题在当前 DOM 中重新查找资源行（应对列表刷新后旧 DOM 引用失效）
+     * @param {string} title - 资源标题
+     * @returns {HTMLElement|null} - 找到的行元素
+     */
+    function findRowByTitle(title) {
+        const rows = findResourceRows();
+        for (const { row } of rows) {
+            if (getRowTitle(row) === title) return row;
+        }
+        return null;
+    }
+
+    /**
+     * 等待列表 DOM 稳定（删除操作后列表会刷新重建）
+     * @param {number} maxWaitMs - 最长等待时间
+     */
+    async function waitForListStable(maxWaitMs = 2000) {
+        const container = getArtifactLibraryContainer();
+        if (!container) return;
+
+        let prevCount = -1;
+        const start = Date.now();
+        while (Date.now() - start < maxWaitMs) {
+            await sleep(200);
+            const currentCount = container.querySelectorAll('button mat-icon, button span.mat-icon').length;
+            if (currentCount === prevCount && currentCount > 0) return;
+            prevCount = currentCount;
+        }
+    }
+
+    /**
+     * 执行批量删除流程：先收集标题，再逐个按标题重新定位并删除。
+     * 避免因列表刷新导致 DOM 引用失效而漏删。
      */
     async function runBatchDelete() {
         const selectedRows = getSelectedRows();
         if (selectedRows.length === 0) return;
 
-        const confirmed = window.confirm(`确认删除选中的 ${selectedRows.length} 条资源吗？该操作不可恢复。`);
+        // 收集选中行的标题（不依赖 DOM 引用，应对列表刷新）
+        const titlesToDelete = selectedRows.map(row => getRowTitle(row));
+        const totalCount = titlesToDelete.length;
+
+        // 在删除按钮附近显示内联确认
+        const toolbar = document.getElementById('notebooklm-batch-delete-toolbar');
+        if (!toolbar) return;
+
+        const confirmed = await showInlineConfirm(toolbar, `删除 ${totalCount} 条资源？不可恢复`);
         if (!confirmed) return;
 
         batchDeleteInProgress = true;
-        updateBatchDeleteToolbar();
+        const deleteBtn = toolbar.querySelector('.notebooklm-batch-delete-btn');
+        const countNode = toolbar.querySelector('.notebooklm-batch-delete-count');
 
         let successCount = 0;
-        for (const row of selectedRows) {
+        let failedTitles = [];
+
+        for (let i = 0; i < titlesToDelete.length; i++) {
+            const title = titlesToDelete[i];
+
+            // 更新进度
+            if (deleteBtn) {
+                deleteBtn.disabled = true;
+                deleteBtn.textContent = `删除中 ${i + 1}/${totalCount}`;
+            }
+            if (countNode) {
+                countNode.textContent = `✓${successCount} ✗${failedTitles.length}`;
+            }
+
+            // 按标题重新在当前 DOM 中查找行（列表可能已刷新）
+            const row = findRowByTitle(title);
+            if (!row) {
+                // 行已不在 DOM 中，可能已被前一次删除的刷新带走，视为成功
+                if (DEBUG) console.log(`[DEBUG] 行已消失，视为已删除: ${title}`);
+                successCount += 1;
+                continue;
+            }
+
             const ok = await deleteSingleRowByUi(row);
-            if (ok) successCount += 1;
-            // 每条删除后额外等待，避免连续操作过快导致 UI 状态未同步
-            await sleep(280);
+            if (ok) {
+                successCount += 1;
+            } else {
+                failedTitles.push(title);
+            }
+
+            // 固定等待 2 秒，确保列表完全刷新后再处理下一条，避免重复删除
+            await sleep(2000);
         }
 
         batchDeleteInProgress = false;
-        if (DEBUG) {
-            console.log(`[DEBUG] 批量删除完成: 成功 ${successCount}/${selectedRows.length}`);
+
+        // 显示结果
+        if (countNode) {
+            const resultMsg = failedTitles.length > 0
+                ? `完成 ✓${successCount} ✗${failedTitles.length}`
+                : `已删除 ${successCount} 条`;
+            countNode.textContent = resultMsg;
+            // 3 秒后恢复正常状态
+            setTimeout(() => updateBatchDeleteToolbar(), 3000);
         }
-        updateBatchDeleteToolbar();
+        if (deleteBtn) {
+            deleteBtn.disabled = false;
+            deleteBtn.textContent = `删除 (0)`;
+        }
+
+        if (DEBUG) {
+            console.log(`[DEBUG] 批量删除完成: 成功 ${successCount}/${totalCount}`);
+            if (failedTitles.length > 0) console.log('[DEBUG] 失败项:', failedTitles);
+        }
     }
 
     /**
      * 创建并维护批量删除工具栏（全选 + 批量删除）
+     * 工具栏作为列表容器的首个子元素，随列表滚动，不再悬浮。
      */
     function ensureBatchDeleteToolbar() {
         let toolbar = document.getElementById('notebooklm-batch-delete-toolbar');
@@ -815,28 +940,21 @@
         if (!toolbar) {
             toolbar = document.createElement('div');
             toolbar.id = 'notebooklm-batch-delete-toolbar';
-            toolbar.style.position = 'sticky';
-            toolbar.style.top = '8px';
-            toolbar.style.margin = '8px 8px 8px auto';
-            toolbar.style.width = 'fit-content';
-            toolbar.style.maxWidth = 'calc(100% - 16px)';
-            toolbar.style.zIndex = '20';
-            toolbar.style.background = 'rgba(32, 33, 36, 0.88)';
-            toolbar.style.color = '#fff';
-            toolbar.style.padding = '6px 8px';
-            toolbar.style.borderRadius = '12px';
-            toolbar.style.display = 'flex';
-            toolbar.style.alignItems = 'center';
-            toolbar.style.gap = '8px';
-            toolbar.style.boxShadow = '0 4px 12px rgba(0,0,0,0.18)';
-            toolbar.style.backdropFilter = 'blur(8px)';
+            // 使用 normal flow，不再 sticky/fixed，随列表内容滚动
+            toolbar.style.cssText = `
+                position:relative; margin:6px 8px; width:auto;
+                background:#2d2e30; color:#e8eaed;
+                padding:6px 10px; border-radius:8px;
+                display:flex; align-items:center; gap:8px;
+                border:1px solid #3c4043; font-size:12px;
+            `;
             toolbar.innerHTML = `
                 <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;white-space:nowrap;">
                     <input type="checkbox" class="notebooklm-batch-select-all" />
                     <span>全选</span>
                 </label>
                 <span class="notebooklm-batch-delete-count" style="font-size:12px;opacity:.9;white-space:nowrap;">已选 0/0</span>
-                <button class="notebooklm-batch-delete-btn" style="border:none;border-radius:8px;padding:5px 10px;background:#d93025;color:#fff;cursor:pointer;font-size:12px;line-height:1;white-space:nowrap;">删除 (0)</button>
+                <button class="notebooklm-batch-delete-btn" style="border:none;border-radius:6px;padding:4px 10px;background:#d93025;color:#fff;cursor:pointer;font-size:12px;line-height:1;white-space:nowrap;margin-left:auto;">删除 (0)</button>
             `;
             if (container) {
                 container.prepend(toolbar);
