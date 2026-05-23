@@ -176,34 +176,120 @@
     }
 
     /**
-     * 根据 artifactId 在右侧资源列表中反查标题。
+     * 从左侧来源面板中提取所有来源文档的名称。
+     * NotebookLM 的来源面板通常包含用户上传的 PDF/文档/网页等来源。
+     * @returns {string[]} - 来源文档名称数组
+     */
+    function findSourceDocNamesFromLeftPanel() {
+        const names = [];
+
+        // 方法1: 从 checkbox 的 aria-label 获取来源名
+        const checkboxes = document.querySelectorAll('input.mdc-checkbox__native-control[aria-label]');
+        checkboxes.forEach(function (cb) {
+            const label = (cb.getAttribute('aria-label') || '').trim();
+            if (label && !isBadTitle(label)) {
+                names.push(normalizeSourceDocumentTitle(label));
+            }
+        });
+
+        // 方法2: 从 sourceDocumentTitleById 缓存中获取所有已知来源
+        if (names.length === 0) {
+            sourceDocumentTitleById.forEach(function (title) {
+                if (!isBadTitle(title)) {
+                    names.push(title);
+                }
+            });
+        }
+
+        if (DEBUG && names.length > 0) console.log('[DEBUG] Left panel source names:', names);
+        return names;
+    }
+
+    /**
+     * 尝试从右侧资源行的 DOM 上下文中找到该资源引用的来源文档名。
+     * 当 API 拦截数据不可用时，作为 DOM 级别的兆底。
+     * @param {string|null} artifactId - 资源 ID
+     * @returns {string} - 来源文档名，找不到则返回空字符串
+     */
+    function findSourceDocNameForArtifact(artifactId) {
+        // 1. 先尝试 API 拦截数据
+        if (artifactId) {
+            var sourceDocumentId = sourceDocumentIdByResourceId.get(artifactId) || '';
+            var sourceDocumentTitle = sourceDocumentTitleById.get(sourceDocumentId) || '';
+            if (!isBadTitle(sourceDocumentTitle)) {
+                if (DEBUG) console.log('[DEBUG] Source doc from API mapping:', sourceDocumentTitle);
+                return sourceDocumentTitle;
+            }
+        }
+
+        // 2. 如果左侧来源面板只有 1 个来源，直接使用该来源名
+        var leftPanelNames = findSourceDocNamesFromLeftPanel();
+        if (leftPanelNames.length === 1) {
+            if (DEBUG) console.log('[DEBUG] Only 1 source in left panel, using:', leftPanelNames[0]);
+            return leftPanelNames[0];
+        }
+
+        // 3. 尝试从资源行的 "N 个来源" 文本判断：如果只有 1 个来源，且左侧面板有来源
+        if (artifactId && leftPanelNames.length > 0) {
+            var container = getArtifactLibraryContainer();
+            if (container) {
+                var jslogButtons = container.querySelectorAll('button[jslog]');
+                for (var bi = 0; bi < jslogButtons.length; bi++) {
+                    var btnItem = jslogButtons[bi];
+                    var btnIds = parseIdsFromJslog(btnItem.getAttribute('jslog'));
+                    if (btnIds.artifactId !== artifactId) continue;
+
+                    var row = btnItem.closest('[role="listitem"], li, .mat-mdc-list-item, .source-item, .artifact-item, div');
+                    if (!row) continue;
+
+                    // 检查 "1 个来源" 文本
+                    var detailsSpan = row.querySelector('.artifact-details, .mat-body-small');
+                    var detailsText = detailsSpan ? (detailsSpan.textContent || '') : (row.textContent || '');
+                    var sourceCountMatch = detailsText.match(/(\d+)\s*个来源/);
+                    if (sourceCountMatch && parseInt(sourceCountMatch[1]) === 1 && leftPanelNames.length >= 1) {
+                        if (DEBUG) console.log('[DEBUG] Artifact has 1 source, using left panel name:', leftPanelNames[0]);
+                        return leftPanelNames[0];
+                    }
+                    break;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * 根据 artifactId 查找下载文件名：优先返回来源文档名，其次返回资源标题。
      * @param {string|null} artifactId - 资源 ID
      * @returns {string} - 命中的标题，找不到则返回空字符串
      */
     function findTitleByArtifactId(artifactId) {
         if (!artifactId) return '';
 
-        const sourceDocumentId = sourceDocumentIdByResourceId.get(artifactId) || '';
-        const sourceDocumentTitle = sourceDocumentTitleById.get(sourceDocumentId) || '';
-        if (!isBadTitle(sourceDocumentTitle)) {
-            return sourceDocumentTitle;
+        // 优先：来源文档名（通过 API 拦截或 DOM 提取）
+        var sourceDocName = findSourceDocNameForArtifact(artifactId);
+        if (!isBadTitle(sourceDocName)) {
+            return sourceDocName;
         }
 
-        const mappedTitle = resourceTitleById.get(artifactId) || '';
+        // 次选：资源自身标题（从 batchexecute 拦截的数据中获取）
+        var mappedTitle = resourceTitleById.get(artifactId) || '';
         if (!isBadTitle(mappedTitle)) {
             return mappedTitle;
         }
 
-        const container = getArtifactLibraryContainer();
-        if (!container) return '';
+        // 兆底：从 DOM 中的资源行提取标题
+        var containerEl = getArtifactLibraryContainer();
+        if (!containerEl) return '';
 
-        const jslogButtons = container.querySelectorAll('button[jslog]');
-        for (const btn of jslogButtons) {
-            const ids = parseIdsFromJslog(btn.getAttribute('jslog'));
-            if (ids.artifactId !== artifactId) continue;
+        var jslogBtns = containerEl.querySelectorAll('button[jslog]');
+        for (var j = 0; j < jslogBtns.length; j++) {
+            var btnEl = jslogBtns[j];
+            var idsObj = parseIdsFromJslog(btnEl.getAttribute('jslog'));
+            if (idsObj.artifactId !== artifactId) continue;
 
-            const row = btn.closest('[role="listitem"], li, .mat-mdc-list-item, .source-item, .artifact-item, div');
-            const rowTitle = row ? getRowTitle(row) : '';
+            var rowEl = btnEl.closest('[role="listitem"], li, .mat-mdc-list-item, .source-item, .artifact-item, div');
+            var rowTitle = rowEl ? getRowTitle(rowEl) : '';
             if (!isBadTitle(rowTitle)) {
                 return rowTitle;
             }
@@ -214,47 +300,77 @@
 
     /**
      * 从当前点击按钮精确解析本次下载应使用的来源文件名。
+     * 优先使用来源文档名，确保下载文件以引用来源命名。
      * @param {HTMLElement} btn - 当前点击的下载按钮
      * @returns {string} - 最终用于下载的基础文件名
      */
     function resolveDownloadBaseNameFromButton(btn) {
-        const ids = parseIdsFromJslog(btn.getAttribute('jslog'));
-        const exactTitle = findTitleByArtifactId(ids.artifactId);
-        if (!isBadTitle(exactTitle)) {
-            if (DEBUG) console.log('[DEBUG] Resolved exact title from artifactId:', ids.artifactId, exactTitle);
-            return sanitizeFilename(exactTitle);
+        // 1. 尝试从当前按钮的 jslog 获取 artifactId
+        var ids = parseIdsFromJslog(btn.getAttribute('jslog'));
+        var effectiveArtifactId = ids.artifactId;
+
+        // 2. 如果当前按钮没有 artifactId（如菜单中的下载按钮），使用 lastArtifactContext
+        if (!effectiveArtifactId && lastArtifactContext && lastArtifactContext.artifactId) {
+            effectiveArtifactId = lastArtifactContext.artifactId;
         }
 
-        if (ids.artifactId) {
-            if (DEBUG) console.log('[DEBUG] Fallback to current artifactId:', ids.artifactId);
-            return sanitizeFilename(ids.artifactId);
+        // 3. 优先尝试获取来源文档名
+        if (effectiveArtifactId) {
+            var sourceDocName = findSourceDocNameForArtifact(effectiveArtifactId);
+            if (!isBadTitle(sourceDocName)) {
+                if (DEBUG) console.log('[DEBUG] Resolved source doc name for download:', effectiveArtifactId, sourceDocName);
+                return sanitizeFilename(sourceDocName);
+            }
         }
 
+        // 4. 尝试使用 lastArtifactContext 中缓存的来源文档名
+        if (lastArtifactContext && !isBadTitle(lastArtifactContext.sourceDocName)) {
+            if (DEBUG) console.log('[DEBUG] Using cached sourceDocName from lastArtifactContext:', lastArtifactContext.sourceDocName);
+            return sanitizeFilename(lastArtifactContext.sourceDocName);
+        }
+
+        // 5. 退而求其次：使用资源自身标题
+        if (effectiveArtifactId) {
+            var artifactTitle = resourceTitleById.get(effectiveArtifactId) || '';
+            if (!isBadTitle(artifactTitle)) {
+                if (DEBUG) console.log('[DEBUG] Fallback to artifact title:', artifactTitle);
+                return sanitizeFilename(artifactTitle);
+            }
+        }
+
+        // 6. 使用 lastArtifactContext 的标题
         if (lastArtifactContext && !isBadTitle(lastArtifactContext.title)) {
             if (DEBUG) console.log('[DEBUG] Fallback to lastArtifactContext title:', lastArtifactContext.title);
             return sanitizeFilename(lastArtifactContext.title);
         }
 
-        const fallback = getSourceName();
+        // 7. 最终兆底
+        var fallback = getSourceName();
         if (DEBUG) console.log('[DEBUG] Fallback to getSourceName():', fallback);
         return sanitizeFilename(fallback);
     }
 
     /**
-     * 绑定“最近资源上下文”，用于下载文件名优先按 artifactId 命中来源标题
+     * 绑定“最近资源上下文”，用于下载文件名优先按 artifactId 命中来源标题。
+     * 同时缓存来源文档名，确保后续下载时可以直接使用。
      * @param {HTMLElement} btn - 触发按钮
      */
     function bindArtifactContextFromButton(btn) {
-        const jslog = btn.getAttribute('jslog');
-        const ids = parseIdsFromJslog(jslog);
+        var jslog = btn.getAttribute('jslog');
+        var ids = parseIdsFromJslog(jslog);
         if (!ids.artifactId) return;
 
-        const title = findTitleByArtifactId(ids.artifactId) || '';
+        // 分别获取来源文档名和资源标题
+        var sourceDocName = findSourceDocNameForArtifact(ids.artifactId) || '';
+        var artifactTitle = resourceTitleById.get(ids.artifactId) || '';
+        // title 优先使用来源文档名
+        var title = (!isBadTitle(sourceDocName) ? sourceDocName : artifactTitle) || '';
 
         lastArtifactContext = {
             notebookId: ids.notebookId || null,
             artifactId: ids.artifactId,
             title: title || '',
+            sourceDocName: sourceDocName || '',
             timestamp: Date.now()
         };
 

@@ -143,12 +143,6 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   const url = item.finalUrl || item.url || "";
 
   cleanupExpiredRenameTasks();
-  const currentFilename = item.filename || "";
-  const looksUnnamed = /(^|\/)unnamed(\.[a-z0-9]{2,5})?$/i.test(currentFilename);
-  // 文件名看起来正常（非空、非 unnamed）：说明页面/浏览器已自行设定了有效文件名，
-  // 例如脑图通过 <a download="xxx.md"> 下载时就有正确文件名，不应该被覆盖。
-  const hasGoodFilename = currentFilename && !looksUnnamed;
-
   // 优先匹配同标签页 + 同 URL 的精确任务。
   let taskIndex = -1;
   if (item.tabId !== undefined && item.tabId !== -1) {
@@ -156,8 +150,8 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
       if (task.tabId !== item.tabId) return false;
       // 仅在 task 有 url 且与下载 url 匹配时才精确命中
       if (task.url && url) return task.url === url;
-      // task.url 为空时，仅当当前文件名不正常才视为匹配（避免覆盖脑图等已有好文件名的下载）
-      return !hasGoodFilename;
+      // task.url 为空时，说明是刚从菜单点击了下载，直接匹配
+      return !task.url;
     });
   }
 
@@ -165,13 +159,8 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     taskIndex = pendingRenameQueue.findIndex((task) => task.url && url && task.url === url);
   }
 
-  if (taskIndex === -1 && looksUnnamed && pendingRenameQueue.length > 0) {
-    taskIndex = pendingRenameQueue.length - 1;
-  }
-
-  // 最终兜底：仅当文件名不正常时才使用队列中最后一个任务。
-  // 已有正确文件名的下载（如脑图 markdown）不会被覆盖。
-  if (taskIndex === -1 && !hasGoodFilename && isNotebooklmDownloadItem(item) && pendingRenameQueue.length > 0) {
+  // 最终兜底：如果是 notebooklm 下载且有排队任务，使用最后一个任务
+  if (taskIndex === -1 && isNotebooklmDownloadItem(item) && pendingRenameQueue.length > 0) {
     taskIndex = pendingRenameQueue.length - 1;
   }
 
